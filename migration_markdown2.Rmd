@@ -1,0 +1,606 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+## Introduction
+
+```{r}
+
+options(warn=-1)
+
+suppressPackageStartupMessages({library(ggplot2) 
+library(plotly)
+library(readr) 
+library(tidyverse)
+library(dplyr)
+library(gridExtra)
+library(grid)
+library(ggthemes)
+library(RColorBrewer)
+library(ggfortify)
+library(leaflet)  
+library(rworldmap)})
+
+
+missing <- read_csv("~/Data_Science/kaggle/missingmigrants/MissingMigrantsProject.csv")
+
+head(missing)
+
+# I'm going to simplify the column names just a bit 
+colnames(missing) <- c('id', 'cause_death', 'origin', 'nationality', 'missing', 'dead', 'incident_location', 'date', 'source', 'reliability', 'lat', 'lon')
+
+# check out your new column names
+names(missing)
+
+missing[c("missing", "dead", "date", "lat", "lon")][is.na(missing[c("missing", "dead", "date", "lat", "lon")])] <- 0
+
+summary(missing)
+str(missing)
+```
+
+## Convert our dates 
+
+```{r}
+library(lubridate) 
+
+#output looks like  we are working with a day / month / year format
+missing$date <- dmy(missing$date)
+str(missing$date) # view changes 
+
+summary(missing) # looks like there's a few dates with NAs that were introduced do to some messy data. 
+# Let's clean up our other columns and we'll come back to this.  
+# Dropping these 9 rows might be easiest if there's something odd going on with these dates.
+```
+
+
+
+## Cleanig Data set 
+```{r}
+library(dplyr)
+missing %>% 
+    group_by(origin) %>%   
+    summarise_each(funs(sum(is.na(.))))
+
+
+# That is a large proportion of the number of records in the data
+sum(is.na(missing$origin))
+sum(is.na(missing$source))
+sum(is.na(missing$reliability))
+sum(is.na(missing$nationality))
+```
+
+
+```{r}
+# This code below just cleans up our NA situation by replacing the values, ultimately putting "unknown" in columns with characters that had many NAs
+missing[c("origin")][is.na(missing[c("origin")])] <- 0
+missing[c("nationality")][is.na(missing[c("nationality")])] <- 0
+missing[c("incident_location")][is.na(missing[c("incident_location")])] <- 0
+missing[c("reliability")][is.na(missing[c("reliability")])] <- 0
+missing[c("source")][is.na(missing[c("source")])] <- 0
+
+missing$origin <- gsub("0", "Unknown", missing$origin)
+missing$nationality <- gsub("0", "Unknown", missing$nationality)
+missing$incident_location <- gsub("0", "Unknown", missing$incident_location)
+missing$reliability <- gsub("0", "Unknown", missing$reliability)
+missing$source <- gsub("0", "Unknown", missing$source)
+
+# for simplicity I'm just going to drop those 9 NAs in the date column. 
+missing <- missing %>% filter(!is.na(date))
+```
+
+## Data Exploration
+Now let's examine the regions in the data set where people go missing or die. The code below shows that most people die or go missing around the Mediterranean. This seems to match what we're hearing in the news and helps contextualize all the stories we hear about refugees drowning in the Mediterranean sea.
+
+```{r}
+regions <- missing %>% 
+    group_by(incident_location) %>% 
+    summarise(sum(missing), sum(dead))
+
+regions <- as.data.frame(regions)
+colnames(regions) <- c('incident_location', 'missing', 'dead')
+regions <- arrange(regions, dead)
+regions$incident_location <- factor(regions$incident_location, levels = regions$incident_location[order(regions$dead)])
+
+regions
+```
+Now we plot the missing persons (migrants) by region where they went missing. The Mediterranean region stands out.
+
+The plots clearly show the Mediterranean as a location of interest. The incidents of missing persons and deaths in the Mediterranean are much greater than any other location throughout the world. North Africa is another region that sticks out here with a large number of recorded deaths.
+
+```{r}
+library(readxl)
+regional_data <- read_excel("C:/Users/John/Desktop/Migration/regional_data.xlsx")
+
+regions <- merge(regions, regional_data, by = "incident_location")
+#regions$total <- regional_data$total
+
+regions$missing_100k <- regions$missing/regions$total * 100000
+regions$death_100k <- regions$dead/regions$total * 100000
+
+regions
+
+```
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+newsub <- regions[regions$dead >= 115,]
+
+# Look at the distribution of deaths by region 
+p <- ggplot(newsub, aes(x=reorder(incident_location, death_100k), y=death_100k)) + 
+  geom_bar(aes(fill=missing),stat='identity') + 
+  coord_flip() + theme_fivethirtyeight(base_size = 10, base_family = "sans") + 
+  scale_fill_gradientn(name='',colors=colorRampPalette(c("gray","#46ACC8"))(10)) + 
+  theme(legend.position='none',plot.title = element_text(size =10)) + 
+  labs(caption = "Source: IOM") +
+  ggtitle('Migrant Deaths per 100,000\nMigrants by Region') 
+
+# clean and plot missing persons by region 
+missing_sums <- subset(regions, missing >= 1)
+
+missing_sums  <- arrange(missing_sums , missing)
+missing_sums$incident_location <- factor(missing_sums$incident_location, levels = missing_sums$incident_location[order(missing_sums$missing)])
+
+p1 <- missing_sums %>% 
+  ggplot(aes(x=reorder(incident_location,missing_100k),y=missing_100k)) + 
+  geom_bar(aes(fill=missing),stat='identity') + 
+  coord_flip() + theme_fivethirtyeight(base_size = 10, base_family = "sans") + 
+  scale_fill_gradientn(name='',colors=colorRampPalette(c("gray","#DD8D29"))(10)) + 
+  theme(legend.position='none',plot.title = element_text(size =10)) + 
+  labs(caption = "Source: IOM") +
+  ggtitle('Missing Persons per 100,000\nMigrants by Region')
+  
+
+grid.arrange(p,p1,ncol=2)
+
+```
+
+
+
+
+
+
+```{r}
+
+# plot missing persons and deaths over time 
+
+#deaths by date
+p4 <- ggplot(missing, aes(x=date, y=dead)) + 
+  geom_line() +
+  theme_fivethirtyeight(base_size = 7, base_family = "sans") + 
+  ggtitle("deaths by date")
+p4
+
+# missing persons by date
+p5 <- ggplot(missing, aes(x=date, y=missing)) + 
+  geom_line() +
+  theme_fivethirtyeight(base_size = 7, base_family = "sans") + 
+  ggtitle("missing persons by date")
+p5
+
+
+
+```
+
+The Nationality column is a pretty messy column. I'm liking the region of origin variable after exploring how Nationality is tracked in the data set.
+
+We've got about 220 categories of nationalities. Some are duplicates like 'Mexico' and 'Mexican'. Others have some ethnic suggestions to them such as 'Myanmar' and 'Myanmar (Rohingya)'. Others vary like categories for Syria such as Syria', 'Syrian' and 'Syria Arab Republic'... even 'African' and 'Sub-Saharan'...wondering how accurate these categories actually are...could a sub-saharan nationality been classified as 'African' when the data set was created? I'm even seeing some columns with multiple nationalities and ethnicities listed. Cleaning this up is going to take some time. There are also a lot of unknowns in this column - 1567 to be exact. Still hard to tell how much value can be derived from this column given how messy it is and the amount of unknowns.
+
+
+```{r}
+nations <- missing %>% 
+    group_by(nationality) %>%   
+    count()
+nations <- as.data.frame(nations)
+head(nations, 20)
+```
+## Data Carpentry on Cause of Death Column
+
+Let's focus on the tricky cause of death column. Here we see hundreds of causes of death.
+The cause of death column has 290 different categorical variables. There appear to be some variables that are the same with different spellings. Others appear to have a lot of detail, but this detail is going to be difficult for anyone to make sense of when looking for patterns in the data. It would be great if they used some type of standard classification method here to make sense of what's going on. Going forward we're going to need to clean this up, address the spelling issues, and collapse certain categories.
+
+Before we get started I found this helpful resource from IOM.
+resource: https://missingmigrants.iom.int/sites/default/files/gmdac_data_briefing_series_issue4.pdf
+
+On page 5 of their report, the missing migrants project seems to have collapsed or at least they are presenting the causes of death in a limited number of categories. This is a helpful start. When collapsing variable values we'll try use this structure as a starting point and see how far we get.
+
+Before we start cleaning let's look at all the cause of death values.
+
+
+```{r}
+count <- missing %>% 
+    group_by(cause_death) %>%  
+    count()
+
+count <- as.data.frame(count)
+head(count, 20) # limit the print because there are too many
+```
+
+
+```{r}
+# subset the dataframe to the following regions: Europe, Mediterranean, Middle East, North Africa
+missing_med <- subset(missing, incident_location == "Europe" | incident_location == "Mediterranean" | incident_location == "Middle East" | incident_location =="North Africa")
+
+#check the data set.  We're down to 1415 variables.  
+str(missing_med)
+regions <- missing_med %>% group_by(incident_location) %>% summarise(sum(missing), sum(dead))
+regions
+```
+
+
+Below are the new cause of death categories:
+These are pretty similar to what's in the data set.
+
+Drowning
+Medical
+Asphyxiation
+Vehicle Accident
+Train Accident
+Violence, Assault, Murder
+Exhaustion Starvation, Dehydration, Exposure
+Sexual Assault
+Accident
+Unknown
+
+
+```{r}
+
+# this was a bit tedious to reclassify these as appropriate. 
+
+cleanup <- function(df) {
+    df <- gsub("Boat fire","Accident",df)
+    df <- gsub("Asphyxiation and crushing", "Asphyxiation",df)
+    df <- gsub("Beat-up and killed", "Violence, Assault, Murder",df)
+    df <- gsub("Burned to death hiding in truck", "Vehicle Accident",df)
+    df <- gsub("Burns and Suffocation", "Asphyxiation",df)
+    df <- gsub("Burns from cooking gas explosion in connection house in Libya", "Accident",df)
+    df <- gsub("Clubbed/beaten to death","Violence, Assault, Murder",df)
+    df <- gsub("Crushed","Accident",df)
+    df <- gsub("Crushed / drowning","Drowning",df)
+        df <- gsub("Boat","Accident",df)
+    df <- gsub("Accident / drowning","Accident",df)
+    df <- gsub("Accident by bus on ferry","Accident",df)
+    df <- gsub("Accident by pallets","Accident",df)
+    df <- gsub("Accident to death","Accident",df)
+    df <- gsub("Dehydration","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration and exposure to the elements","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration Harsh_weather_lack_of_adequate_shelter","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration Harsh_weather_lack_of_adequate_shelter Suffocation Excessive_physical_abuse Sexual_abuse","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration Suffocation Vehicle_Accident","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration Vehicle_Accident Excessive_physical_abuse","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Dehydration, Starvation","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Died of unknown cause in hospital shortly after rescue","Unknown",df)
+    df <- gsub("drowning","Drowning",df)
+    df <- gsub("Drowning after being thrown overboard by other passengers","Drowning",df)
+    df <- gsub("Drowning or suffocation in hull","Drowning",df)
+    df <- gsub("Drowning, Asphyxiation","Drowning",df)
+    df <- gsub("Drowning, Other","Drowning",df)
+    df <- gsub("Drowning, Trampling","Drowning",df)
+    df <- gsub("Drowning. Boat collided with ferry","Drowning",df)
+    df <- gsub("Electrocuted on train","Train Accident",df)
+    df <- gsub("Electrocution","Accident",df)
+    df <- gsub("Electrocution on railway","Train Accident",df)
+    df <- gsub("Excessive_physical_abuse","Violence, Assault, Murder",df)
+    df <- gsub("Excessive_physical_abuse Sexual_abuse","Sexual Assault",df)
+    df <- gsub("Excessive_physical_abuse Shot_or_Stabbed","Violence, Assault, Murder",df)
+    df <- gsub("Exposure","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Exposure, Hyperthermia","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Exposure. Died upon entry to refugee camp.","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Fell from boat","Accident",df)
+    df <- gsub("Fell from train","Train Accident",df)
+    df <- gsub("Fell from truck","Vehicle Accident",df)
+    df <- gsub("Fuel burns","Accident",df)
+    df <- gsub("Fuel Inhalation","Asphyxiation",df)
+    df <- gsub("Gylcemic crisis (Diabetic, medicine thrown overboard)","Medical",df)
+    df <- gsub("Harsh conditions","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter Excessive_physical_abuse","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter Excessive_physical_abuse Sexual_abuse","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter Other","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter Suffocation Vehicle_Accident","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Harsh_weather_lack_of_adequate_shelter Vehicle_Accident","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Head injury","Accident",df)
+    df <- gsub("Head injury from fall","Accident",df)
+    df <- gsub("Head trauma (hit by boat propeller)","Accident",df)
+    df <- gsub("Hi by truck","Vehicle Accident",df)
+    df <- gsub("Hit by car","Vehicle Accident",df)
+    df <- gsub("Hit by train","Train Accident",df)
+    df <- gsub("Hit by truck","Vehicle Accident",df)
+    df <- gsub("Hit by vehicle","Vehicle Accident",df)
+    df <- gsub("Hit by Vehicle","Vehicle Accident",df)
+    df <- gsub("Homicide, likely by asphyxiation","Violence, Assault, Murder",df)
+    df <- gsub("Hunger, fatigue","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Hyperthermia","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Hyperthermia, Abandoned by smugglers in the desert","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Hyperthermia, starvation","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Hypothermia, Exhaustion","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Hypothermia, Malnutrition","Accident",df)
+    df <- gsub("Inhalation of toxic fumes from boat engine","Accident",df)
+    df <- gsub("Injured from a fight","Violence, Assault, Murder",df)
+    df <- gsub("Killed","Violence, Assault, Murder",df)
+    df <- gsub("NA","Unknown",df)
+    df <- gsub("Presumed Drowning","Drowning",df)
+    df <- gsub("Hypothermia","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Unknown (found on motorway)","Unknown",df)
+    df <- gsub("Unspecified location between North Africa and Italy. Body brought to Calabria.","Unknown",df)
+    df <- gsub("Starvation, Exhaustion, Starvation, Dehydration, Exhaustion, Starvation, Dehydration, Exposure, Exhaustion","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Exhaustion, Starvation, Dehydration, Exposure, Abandoned by smugglers in the desert","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Toxic fumes/asphyxiation","Asphyxiation",df)
+    df <- gsub("Shot","Violence, Assault, Murder ",df)
+    df <- gsub("Plane stowaway","Unknown",df)
+    df <- gsub("Suffocation, Trampled","Asphyxiation",df)
+    df <- gsub("Pulmonary edema","Medical",df)
+    df <- gsub("Suffocation","Asphyxiation",df)
+    df <- gsub("Unknown (body recovered from boat)","Unknown",df)
+    df <- gsub("Unknown (found dead on top of train)","Unknown",df)
+    df <- gsub("Unknown (body recovered from boat)","Unknown",df)
+    df <- gsub("Presumed asphyxiation","Asphyxiation",df)
+    df <- gsub("Vehicle accident","Vehicle Accident",df)
+    df <- gsub("Gylcemic crisis (Diabetic, medicine thrown overboard)","Medical",df)
+    df <- gsub("Unknown, plane stowaway","Unknown",df)
+    df <- gsub("Violent robbery","Violence, Assault, Murder",df)
+    df <- gsub("Meningitis","Medical",df)
+    df <- gsub("Exhaustion, Starvation, Dehydration, Exposure, hypothermia","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Accident from fall","Accident",df)
+    df <- gsub("Accident on railway","Train Accident",df)
+    df <- gsub("Asphyxiation Vehicle_Accident","Asphyxiation",df)
+    df <- gsub("Asphyxiation, Other","Asphyxiation",df)
+    df <- gsub("Drowning. Accident collided with ferry","Drowning",df)
+    df <- gsub("Drowning. Accident collided with ferry","Unknown",df)
+    df <- gsub("Exhaustion, Exhaustion, Starvation, Dehydration, Exposure, Exhaustion, Starvation, Dehydration, ","Exhaustion, Starvation, Dehydration, Exposure",df)
+    df <- gsub("Likely Drowning ","Drowning",df)
+    df <- gsub("Lung infection","Medical",df)
+    
+    return(df)
+}
+
+# this function helps, but there's still a lot of categories that need cleaning.  
+missing_med$cause_death <- cleanup(missing_med$cause_death)
+
+
+# further cleaning up this column using using a more flexible technique. 
+missing_med$cause_death[startsWith(missing_med$cause_death, "Exhaustion")] <- "Exhaustion, Starvation, Dehydration, Exposure"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Starvation")] <- "Exhaustion, Starvation, Dehydration, Exposure"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Violence")] <- "Violence, Assault, Murder"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Sickness")] <- "Medical"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Gylcemic")] <- "Medical"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Head trauma")] <- "Medical"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Likely suffocation")] <- "Asphyxiation"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Murdered")] <- "Violence, Assault, Murder"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Likely Drowning")] <- "Drowning"
+missing_med$cause_death[startsWith(missing_med$cause_death, "On board violence")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Plane Stowaway")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Presumed dehydration")] <- "Exhaustion, Starvation, Dehydration, Exposure"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Other")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Presumed violence")] <- "Violence, Assault, Murder"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Probable Drowning")] <- "Drowning"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Respiratory problem")] <- "Medical"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Road accident")] <- "Vehicle Accident"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Sexual_abuse")] <- "Sexual Assault"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Tekeze River, near Himora, Ethiopia")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Train accident")] <- "Sexual Assault"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Stabbed")] <- "Violence, Assault, Murder"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Truck crash")] <- "Vehicle Accident"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Unclear")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Vehicle incident")] <- "Vehicle Accident"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Vehicle_Accident")] <- "Vehicle Accident"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Undernourished")] <- "Exhaustion, Starvation, Dehydration, Exposure"
+missing_med$cause_death[startsWith(missing_med$cause_death, "Unknown")] <- "Unknown"
+missing_med$cause_death[startsWith(missing_med$cause_death, "unknown")] <- "Unknown"
+
+# We've got some leftover NAs encoded as <NA> in the data.  The normal na removal code isn't 
+# working so this bit tranforms things and changes these to unknown.  
+missing_med$cause_death[is.na(missing_med$cause_death)] <- 0
+missing_med$cause_death <- gsub(0,"Unknown", missing_med$cause_death)
+
+
+# View new cause of death categories and sum the missing persons and death counts 
+missing_med %>% 
+    group_by(cause_death) %>% 
+    summarise(sum(missing), sum(dead))
+```
+
+
+```{r}
+library(gridExtra)
+library(grid)
+library(ggthemes)
+library(RColorBrewer)
+library(ggfortify)
+library(rworldmap)
+
+worldMap <- fortify(map_data("world"), region = "region")
+
+map <-ggplot() + 
+  geom_map(data = worldMap, map = worldMap,aes(x = long, y = lat, map_id = region, group = group),fill = "white", color = "black", size = 0.25)
+```
+
+
+```{r}
+# define the space for routes using the lat and lon coords and incident location 
+missing_med$route <- ifelse((missing_med$lat <= 40) & (missing_med$lat >= 30) & (missing_med$lon <= 5) & (missing_med$lon >= -20), "Western Mediterranean Route",
+                      ifelse((missing_med$lat <= 41) & (missing_med$lat >= 28) & (missing_med$lon >= 5) & (missing_med$lon <= 22), "Central Mediterranean Route", 
+                      ifelse((missing_med$lat <= 35) & (missing_med$lat >= 30) & (missing_med$lon >= 20 ) & (missing_med$lon <= 35), "Apulia and Calabria Route",
+                      ifelse((missing_med$lat <= 41) & (missing_med$lat >= 35) & (missing_med$lon >= 20) & (missing_med$lon <= 80), "Eastern Mediterranean Route", 
+                      ifelse((missing_med$lat >= 41) & (missing_med$lat <= 47) & (missing_med$lon >= 18) & (missing_med$lon <= 28), "Western Balkan Route", 
+                      ifelse((missing_med$incident_location == "North Africa") | (missing_med$incident_location == "Sub-Saharan Africa"), "Africa Route", 
+                      ifelse((missing_med$incident_location == "Europe"), "Europe Route","Other")))))))
+```
+
+
+
+
+```{r}
+
+missing_sums  <- arrange(missing_sums , missing)
+missing_sums$incident_location <- factor(missing_sums$incident_location, levels = missing_sums$incident_location[order(missing_sums$missing)])
+
+p2 <- missing_med %>% 
+  ggplot(aes(x=reorder(route,dead),y=missing)) + 
+  geom_bar(aes(fill=missing),stat='identity') + 
+  coord_flip() + theme_fivethirtyeight(base_size = 10, base_family = "sans") + 
+  scale_fill_gradientn(name='',colors=colorRampPalette(c("gray","#DD8D29"))(10)) + 
+  theme(legend.position='none',plot.title = element_text(size =10)) + 
+  labs(caption = "Source: IOM") +
+  ggtitle('Missing Persons\nRecorded by Region')
+
+p2
+```
+
+```{r}
+# create a new data frame just in case we want to go back and try something else.  
+df <- missing_med 
+
+# create a new True/False Feature for drowning 
+df$drown <- ifelse((missing_med$cause_death == "Drowning"), "TRUE", "FASLE")
+
+# The nationality column is pretty messey as well. We'll try a simple fix, but given how messy this 
+# column was earlier we'd urge caution in a real world analysis setting. 
+df$nationality[startsWith(df$nationality, "Syr")] <- "Syrian"
+
+# now view the missing and dead Syrians in a table 
+nation <- df %>% 
+    group_by(nationality == 'Syrian') %>% 
+    summarise(sum(missing), sum(dead))
+
+nation
+
+# create a true/false feature for Syrian 
+df$syrian <- ifelse((df$nationality == "Syrian"), "TRUE", "FASLE")
+
+# check the new syrian column to make sure it looks like what we did above 
+nation <- df %>% 
+    group_by(syrian == 'TRUE') %>% 
+    summarise(sum(missing), sum(dead))
+
+nation
+```
+
+## Migrant Routes Where Syrians go Missing
+```{r}
+# look at our missing persons records on a map 
+med_missing_p <- subset(missing_med, missing >= 1)
+
+# specify color palette for map points
+pal <- colorNumeric(palette = colorRamp(c("#a669f4", "#0c000f"), interpolate = "spline"),
+                   reverse = FALSE,  
+                   domain = NULL)
+
+leaflet(med_missing_p) %>% addTiles() %>%
+  addCircles(lng = ~lon, lat = ~lat, weight = 4, color = ~pal(missing),
+    radius = ~missing * 500, popup = ~incident_location) %>% 
+      addLegend("bottomright", colors= "#a669f4", labels="Missing'", title="Missing Migrants <br>in the Greater <br>Mediterranean <br>Region %")
+```
+
+## Syrian Deaths on a Map
+```{r}
+# view the location of deaths 
+med_dead <- subset(missing_med, dead >= 1)
+
+# specify color palette for map points
+ 
+
+leaflet(med_dead) %>% addTiles() %>%
+  addCircles(lng = ~lon, lat = ~lat, weight = 4, color = ~"#ffa500", stroke = TRUE,
+    radius = ~dead * 500, popup = ~incident_location) %>% 
+      addLegend("bottomright", colors= "#ffa500", labels="Deaths'", title="Migrant Deaths <br>in the Greater <br>Mediterranean <br>Region %")
+```
+
+
+```{r}
+leaflet() %>% 
+  addTiles() %>%
+  addCircles(data = med_dead, group = "Deaths", lng = ~lon, lat = ~lat, weight = 4, color = ~"#ffa500", stroke = TRUE,
+    radius = ~dead * 500, popup = ~incident_location) %>%
+  addCircles(data = med_missing_p, group = "Missing", lng = ~lon, lat = ~lat, weight = 4, color = ~"#a669f4", stroke = TRUE,
+    radius = ~missing * 500, popup = ~incident_location) %>% 
+    # Layers control
+  addLayersControl(
+    baseGroups = c("Deaths (default)", "Missing"),
+    options = layersControlOptions(collapsed = FALSE)) %>%
+      addLegend("bottomright", colors= "#a669f4", values = ~missing, labels="missing", title="Missing Migrants") %>%
+      addLegend("bottomright", colors= "#ffa500", values = ~dead, labels="dead", title="Migrant Deaths")
+```
+
+## Adding New Features to Analyze Mediterranean Migrant Routes
+Now we are going to add another feature called migration route. This new feature is closely related to incident location. However, we're breaking thigs down a little more based on information from Frontex (Europe's border patrol agency) and IOM defined migration routes. According to Frontex and IOM several migration routes exist around the Mediterranean Sea. Here's some helpful links for more background on the routes: http://frontex.europa.eu/trends-and-routes/migratory-routes-map/ http://migration.iom.int/europe/
+
+I think these breaks represent a good start, but they could probably be improved if you had more specialized knowledge of the routes.
+
+```{r}
+# define the space for routes using the lat and lon coords and incident location 
+missing_med$route <- ifelse((missing_med$lat <= 40) & (missing_med$lat >= 30) & (missing_med$lon <= 5) & (missing_med$lon >= -20), "Western Mediterranean Route",
+                      ifelse((missing_med$lat <= 41) & (missing_med$lat >= 28) & (missing_med$lon >= 5) & (missing_med$lon <= 22), "Central Mediterranean Route", 
+                      ifelse((missing_med$lat <= 35) & (missing_med$lat >= 30) & (missing_med$lon >= 20 ) & (missing_med$lon <= 35), "Apulia and Calabria Route",
+                      ifelse((missing_med$lat <= 41) & (missing_med$lat >= 35) & (missing_med$lon >= 20) & (missing_med$lon <= 80), "Eastern Mediterranean Route", 
+                      ifelse((missing_med$lat >= 41) & (missing_med$lat <= 47) & (missing_med$lon >= 18) & (missing_med$lon <= 28), "Western Balkan Route", 
+                      ifelse((missing_med$incident_location == "North Africa") | (missing_med$incident_location == "Sub-Saharan Africa"), "Africa Route", 
+                      ifelse((missing_med$incident_location == "Europe"), "Europe Route","Other")))))))
+```
+
+
+## Results by Route
+```{r}
+color <- colorFactor(topo.colors(8), missing_med$route)
+
+
+leaflet() %>% 
+  addTiles() %>%
+  addCircles(data = missing_med, group = "route", lng = ~lon, lat = ~lat, weight = 4, color = ~color(route), stroke = TRUE,
+    radius = ~dead * 500, popup = ~route) 
+```
+
+
+```{r}
+# create a new data frame just in case we want to go back and try something else.  
+df <- missing_med 
+
+# create a new True/False Feature for drowning 
+df$drown <- ifelse((missing_med$cause_death == "Drowning"), "TRUE", "FASLE")
+
+# The nationality column is pretty messey as well. We'll try a simple fix, but given how messy this 
+# column was earlier we'd urge caution in a real world analysis setting. 
+df$nationality[startsWith(df$nationality, "Syr")] <- "Syrian"
+
+# now view the missing and dead Syrians in a table 
+nation <- df %>% 
+    group_by(nationality == 'Syrian') %>% 
+    summarise(sum(missing), sum(dead))
+
+nation
+
+# create a true/false feature for Syrian 
+df$syrian <- ifelse((df$nationality == "Syrian"), "TRUE", "FASLE")
+
+# check the new syrian column to make sure it looks like what we did above 
+nation <- df %>% 
+    group_by(syrian == 'TRUE') %>% 
+    summarise(sum(missing), sum(dead))
+
+nation
+```
+
+## Syrian Migrant Deaths by Route
+```{r}
+missing_syrians <- subset(df, syrian == 'TRUE')
+
+
+color <- colorFactor(topo.colors(8), missing_syrians$route)
+
+
+leaflet() %>% 
+  addTiles() %>%
+  addCircles(data = missing_syrians, group = "route", lng = ~lon, lat = ~lat, weight = 4, color = ~color(route), stroke = TRUE,
+    radius = ~dead * 500, popup = ~route)
+```
+
+
+
