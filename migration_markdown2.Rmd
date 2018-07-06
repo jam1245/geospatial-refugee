@@ -25,6 +25,7 @@ library(ggthemes)
 library(RColorBrewer)
 library(ggfortify)
 library(leaflet)  
+library(markdown)
 library(rworldmap)})
 
 
